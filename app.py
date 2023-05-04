@@ -1,129 +1,96 @@
-import streamlit as st
-from PIL import Image
-import io
-import base64
-import os
-import json
-import numpy as np
-import uuid
-import re
+import streamlit as st  # Import the Streamlit library for building the app UI
+import easyocr  # Import the EasyOCR library for extracting text from the image
+import cv2  # Import the OpenCV library for image processing
+import numpy as np  # Import the NumPy library for numerical operations
+import pandas as pd  # Import the Pandas library for data manipulation
+from PIL import Image  # Import the Python Imaging Library for image handling
+import re  # Import the re library for regular expression pattern matching
+import sqlite3  # Import the SQLite library for database operations
 
-import json
+# Set up the page title and description
+st.set_page_config(page_title='Business Card Extractor', page_icon=':credit_card:', layout='wide')
+st.title('Business Card Extractor')
+st.write('Upload an image of a business card to extract its information')
 
-DEFAULT_REGION = "us-east-1"
-DEMO_IMAGE = "smart_meter.jpg"
+# Create a file uploader widget
+uploaded_file = st.file_uploader(label='Upload a business card image', type=['jpg', 'jpeg', 'png'])
 
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", DEFAULT_REGION)
+# Define a function to extract the business card information
+def extract_info(image):
+    # Load the image using OpenCV
+    image = cv2.imdecode(np.frombuffer(image.read(), np.uint8), cv2.IMREAD_COLOR)
 
-client = boto3.client("rekognition", region_name=AWS_DEFAULT_REGION)
+    # Use EasyOCR to extract text from the image
+    read = easyocr.Reader(['en'])
+    l = read.readtext(image, detail=0, paragraph=False)
 
+    # Create a dictionary to store the extracted information
+    k = {'Name': "", 'Designation': "", 'Number': "", 'Email': "", 'Website': "", 'Area': "", 'Pincode': ""}
 
-def download_button(object_to_download, download_filename, button_text):
-    """
-    Generates a link to download the given object_to_download.
+    # Parse the text to extract the relevant information
+    k['Name'] = l[0]
+    k['Designation'] = l[1]
+    for i in range(len(l)):
+        if re.findall("[a-zA-Z0-9]+ [a-zA-Z0-9]+ [ St]+", l[i]): #match the string containing the area information
+            k['Area'] = (l[i])
+        if re.search('[^- +a-zA-z]{6}', l[i]): #match the string containing the pincode information
+            res = l[i]
+            result = [int(l[i]) for l[i] in res.split() if l[i].isdigit()]
+            k['Pincode'] = result[0]
+        if re.findall("[^A-Z0-9.-_+~!@#$ %&*()]+@+[a-zA-Z0-9]+.[a-z]+", l[i]): #match the string containing the email information
+            k['Email'] = l[i]
+        if re.findall("[\+\(]?[1-9][0-9 .\-\(\)]{8,}[0-9]", l[i]): #match the string containing the phone number information
+            k['Number'] = l[i]
+        if re.findall('[^ ,0-9!@#$%&*()_+]+[A-Za-z]+.com', l[i]): #match the string containing the website information
+            k["Website"] = l[i]
 
-    Params:
-    ------
-    object_to_download:  The object to be downloaded.
-    download_filename (str): filename and extension of file. e.g. my.json,
-    some_txt_output.txt download_link_text (str): Text to display for download
-    link.
-    button_text (str): Text to display on download button (e.g. 'click here to download file')
+    return k
 
-    Returns:
-    -------
-    (str): the anchor tag to download object_to_download
+# Create a button to extract the business card information
+if uploaded_file is not None:
+    st.image(uploaded_file, caption='Uploaded business card', use_column_width=True)
+    k = extract_info(uploaded_file)
+    if st.button('Extract information'):
+        st.write('Extracted information:')
+        st.write(k)
 
-    Examples:
-    --------
-    download_link(your_df, 'YOUR_DF.csv', 'Click to download data!')
-    download_link(your_str, 'YOUR_STRING.txt', 'Click to download text!')
+    # Create a button to save the extracted information to a SQLite database
+    if st.button("Save data to database!"):
+        # Connect to the SQLite database
+        conn = sqlite3.connect('Bizxcard.sqlite')
+        table_name = k['Name']
+        # Define the table schema and create the table if it doesn't exist
+        query = f'''Create table if not Exists 
+                 {table_name} (Name text,Designation text,Number text, Email text, Website text,Area text,
+                state text,pincode integer)'''
+        conn.execute(query)
+        new_df = pd.DataFrame(k, index=[1])
+        new_df['Website'] = new_df['Website'].apply(lambda x: x.replace(" ", "."))
+        new_df['Area'] = new_df['Area'].apply(lambda x: x.replace(";", "."))
+        new_df['Area'] = new_df['Area'].apply(lambda x: x.replace(" ", ""))
+        new_df['Area'] = new_df['Area'].apply(lambda x: x.replace(",,", ","))
+        new_df.to_sql(table_name, conn, if_exists='replace', index=False)
+        st.write("done")
+        conn.commit()
+        conn.close()
 
-    """
-    object_to_download = json.dumps(object_to_download, ensure_ascii=True, indent=4)
-    try:
-        # some strings <-> bytes conversions necessary here
-        b64 = base64.b64encode(object_to_download.encode()).decode()
-    except AttributeError as e:
-        b64 = base64.b64encode(object_to_download).decode()
+    if st.button("view data"):
+        table_name = k['Name']
+        conn = sqlite3.connect('Bizxcard.sqlite')
+        query = f'''select * from {table_name} '''
+        r_df = pd.read_sql(query, conn)
+        st.table(r_df)
+        conn.commit()
+        conn.close()
 
-    button_uuid = str(uuid.uuid4()).replace("-", "")
-    button_id = re.sub("\d+", "", button_uuid)
+    if st.button("Delete data "):
+        table_name= st.text_input(
+        "Enter some text 👇",
+        label_visibility=st.session_state.visibility,
+        disabled=st.session_state.disabled,
+        placeholder=st.session_state.placeholder,)
 
-    custom_css = f""" 
-        <style>
-            #{button_id} {{
-                background-color: rgb(255, 255, 255);
-                color: rgb(38, 39, 48);
-                padding: 0.25em 0.38em;
-                position: relative;
-                text-decoration: none;
-                border-radius: 4px;
-                border-width: 1px;
-                border-style: solid;
-                border-color: rgb(230, 234, 241);
-                border-image: initial;
-
-            }} 
-            #{button_id}:hover {{
-                border-color: rgb(246, 51, 102);
-                color: rgb(246, 51, 102);
-            }}
-            #{button_id}:active {{
-                box-shadow: none;
-                background-color: rgb(246, 51, 102);
-                color: white;
-                }}
-        </style> """
-
-    dl_link = (
-        custom_css
-        + f'<a download="{download_filename}" id="{button_id}" href="data:file/txt;base64,{b64}">{button_text}</a><br></br>'
-    )
-
-    return dl_link
-
-
-def pil_image_to_byte_array(image):
-    imgByteArr = io.BytesIO()
-    image.save(imgByteArr, "PNG")
-    return imgByteArr.getvalue()
-
-
-@st.cache
-def process_image(image_bytes):
-    response = client.detect_text(Image={"Bytes": image_bytes})
-    return response
-
-
-st.title("Extract text with AWS rekogniton text extraction")
-img_file_buffer = st.file_uploader("Upload an image", type=["png", "jpg", "jpeg"])
-
-
-if img_file_buffer is not None:
-    image_bytes = pil_image_to_byte_array(Image.open(img_file_buffer))
-    image_array = np.array(Image.open(img_file_buffer))
-
-else:
-    image_bytes = open(DEMO_IMAGE, "rb").read()
-    image_array = np.array(Image.open(DEMO_IMAGE))
-
-response = process_image(image_bytes)
-extracted_text = [t["DetectedText"] for t in response["TextDetections"]]
-
-st.image(
-    image_array, use_column_width=True,
-)
-
-st.header("Extracted text")
-st.write(extracted_text)
-
-download_button_str = download_button(
-    extracted_text, "extracted_text.json", f"Click here to download extracted_text"
-)
-st.markdown(download_button_str, unsafe_allow_html=True)
-
-st.header("Raw response")
-st.write(response)
+        conn = sqlite3.connect('Bizxcard.sqlite')
+        query = f'''drop table {table_name} '''
+        pd.read_sql(query, conn)
+        st.write("Information deleted")

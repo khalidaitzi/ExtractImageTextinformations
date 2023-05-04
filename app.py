@@ -8,7 +8,6 @@ import numpy as np
 import uuid
 import re
 
-import boto3
 import json
 
 DEFAULT_REGION = "us-east-1"
